@@ -1,9 +1,13 @@
 #include <gst/gst.h>
+#include <stdio.h>
 
-#define severe 0.9
-#define poor 0.8
-#define good 0.6
-#define underused 0.5
+#define srt_port 8888
+
+#define goal_usage 0.65
+
+#define max_quality 90
+
+#define monitor_speed 0.05
 
 struct Bandwidth_info {
     double in_use;
@@ -24,12 +28,13 @@ void get_bandwidth(GstElement *srtsink, struct Bandwidth_info *out) {
     g_object_get(srtsink, "stats", &stats, NULL);
 
     if (gst_structure_has_field(stats, "callers")) {
-        GValueArray *callers_stats = NULL;
         GValue *v;
-        gst_structure_get(stats, "callers", G_TYPE_VALUE_ARRAY, &callers_stats);
-        gst_structure_free(stats);
-        stats = NULL;
-
+        v = gst_structure_get_value(stats, "callers");
+        if (G_VALUE_TYPE(v) != G_TYPE_VALUE_ARRAY) {
+            g_printerr("Error: Unknown type of caller structure %d expected %d\n", G_VALUE_TYPE(v), G_TYPE_VALUE_ARRAY);
+            return;
+        }
+        GValueArray *callers_stats = g_value_get_boxed(v);
         if (!callers_stats) {
             g_printerr("Error: Failed to retrieve callers stats.\n");
             return;
@@ -59,31 +64,22 @@ void get_bandwidth(GstElement *srtsink, struct Bandwidth_info *out) {
 }
 
 void handle_bandwidth(struct Bandwidth_info *info, struct Elements elements) {
-    double percent = info->in_use / info->maximum;
+    if (!info->maximum) {
+        return;
+    }
+    double use_ratio = info->in_use / info->maximum;
     gint quality;
-
+    g_print("Using %f out of %f mbps (%d)\n", info->in_use, info->maximum, (int)(use_ratio*100));
+    
     g_object_get(elements.encoder, "quality", &quality, NULL);
 
-    // Adjust the JPEG encoder quality based on bandwidth usage
-    if (percent > severe) {
-        quality = (quality * 0.9);  // Decrease quality by 10%
-        g_object_set(elements.encoder, "quality", quality, NULL);
-        g_print("Severe bandwidth usage. Decreasing quality to %d.\n", quality);
-    } else if (percent > poor) {
-        quality = (quality * 0.95);  // Decrease quality by 5%
-        g_object_set(elements.encoder, "quality", quality, NULL);
-        g_print("Poor bandwidth usage. Decreasing quality to %d.\n", quality);
-    } else if (percent > good) {
-        g_print("Good bandwidth usage, considering increasing quality.\n");
-    } else if (percent > underused) {
-        quality = (quality * 1.05);  // Increase quality by 5%
-        g_object_set(elements.encoder, "quality", quality, NULL);
-        g_print("Underused bandwidth. Increasing quality to %d.\n", quality);
-    } else {
-        quality = (quality * 1.1);  // Increase quality by 10%
-        g_object_set(elements.encoder, "quality", quality, NULL);
-        g_print("Very underused bandwidth. Increasing quality to %d.\n", quality);
+    quality = quality * (1 + (goal_usage - use_ratio));
+    
+    if (quality > max_quality) {
+        quality = max_quality;
     }
+    g_print("Setting quality to %d.\n", quality);
+    g_object_set(elements.encoder, "quality", quality, NULL);
 }
 
 // Function to process messages from the GStreamer bus and query bandwidth stats
@@ -93,7 +89,7 @@ gboolean run_loop(GstBus *bus, struct Elements *elements) {
     struct Bandwidth_info bandwidth_info = {0};
 
     // Check for messages with a 1-second timeout
-    msg = gst_bus_timed_pop_filtered(bus, GST_SECOND, GST_MESSAGE_ERROR | GST_MESSAGE_EOS);
+    msg = gst_bus_timed_pop_filtered(bus, monitor_speed * GST_SECOND, GST_MESSAGE_ERROR | GST_MESSAGE_EOS);
 
     // If a message is received, handle it
     if (msg != NULL) {
@@ -141,7 +137,7 @@ int main(int argc, char *argv[]) {
     gst_init(&argc, &argv);
 
     // Create pipeline elements
-    source = gst_element_factory_make("v4l2src", "source");
+    source = gst_element_factory_make("videotestsrc", "source");
     capsfilter = gst_element_factory_make("capsfilter", "capsfilter");
     encoder = gst_element_factory_make("nvjpegenc", "encoder");
     payloader = gst_element_factory_make("rtpjpegpay", "payloader");
@@ -156,13 +152,15 @@ int main(int argc, char *argv[]) {
     }
 
     // Set the properties for the source element
-    g_object_set(source, "device", "/dev/video0", NULL); // Adjust the device path if necessary
+    //g_object_set(source, "device", "/dev/video0", NULL); // Adjust the device path if necessary
 
     // Configure srtsink in listener mode using URI parameters
-    g_object_set(sink, "uri", "srt://0.0.0.0:8888?mode=listener", NULL);
+    char uri[100];
+    snprintf(uri, 100, "srt://:%d?mode=listener", srt_port);
+    g_object_set(sink, "uri", uri, NULL);
 
     // Define the caps filter (raw video format: e.g., YUY2, 640x480, 30fps)
-    caps = gst_caps_from_string("video/x-raw,format=YUY2,width=640,height=480,framerate=30/1");
+    caps = gst_caps_from_string("video/x-raw,width=640,height=480,framerate=30/1");
     g_object_set(capsfilter, "caps", caps, NULL);
     gst_caps_unref(caps);
 

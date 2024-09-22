@@ -2,7 +2,7 @@
 include_directories(${GST_INCLUDE_DIRS})
 
 # Add an executable for the project
-add_executable(gstreamer_bandwidth_app JpegStreaming.c)
+add_executable(gstreamer_bandwidth_app src/JpegStreaming.c)
 
 # Link GStreamer libraries
 target_link_libraries(gstreamer_bandwidth_app ${GST_LIBRARIES})

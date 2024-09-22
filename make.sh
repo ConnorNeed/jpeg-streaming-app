@@ -13,4 +13,4 @@ cmake ..
 make
 
 # Move the compiled binary to the root directory (optional)
-mv gstreamer_bandwidth_app ../
+mv app/gstreamer_bandwidth_app ../
